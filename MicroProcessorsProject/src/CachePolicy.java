@@ -1,0 +1,3 @@
+public enum CachePolicy {
+	WRITE_BACK, WRITE_THROUGH, WRITE_AROUND, WRITE_ALLOCATE
+}
