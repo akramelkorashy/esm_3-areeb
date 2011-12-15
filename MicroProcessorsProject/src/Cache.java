@@ -11,6 +11,14 @@ public class Cache {
 	MemoryWord[][][] Data;
 	int[][] Tag;
 
+	public Cache(int[] params) {
+		this(params[0], params[1], params[2], params[params.length - 1],
+				((params[3] == 1) ? CachePolicy.WRITE_BACK
+						: CachePolicy.WRITE_THROUGH),
+				((params[4] == 1) ? CachePolicy.WRITE_ALLOCATE
+						: CachePolicy.WRITE_AROUND));
+	}
+
 	public Cache(int s, int l, int m, int la, CachePolicy hp, CachePolicy mp) {
 		s <<= 10;
 		L = l;
@@ -67,6 +75,20 @@ public class Cache {
 			}
 		}
 		misses++;
+		return null;
+	}
+	
+	public MemoryWord[] readLine(int addr) {
+		int [] indices = accessVariables(addr);
+		int i = indices[1];
+		int t = indices[2];
+		for (int j = 0; j < M; j++) {
+			if (Tag[j][i] == t) {
+				hits++;
+				return Data[j][i];
+			}
+		}
+		misses ++;
 		return null;
 	}
 
