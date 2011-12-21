@@ -1,4 +1,5 @@
 import java.io.*;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.PriorityQueue;
@@ -13,16 +14,14 @@ public class Main {
 	static int ramSize, ramAccessTime, pipeLineWidth, instructionBufferSize,
 			robSize;
 	static ReservationStation[] stations;
-	static PriorityQueue<Integer> arithFunctionalUnit;
-	static PriorityQueue<Integer> mulFunctionalUnit;
-	static PriorityQueue<Integer> divFunctionalUnit;
+	static PriorityQueue<MemoryWord>[] functionalUnits;
 	static int[] functionalUnitsLatencies;
 	static int[] functionalUnitsNums;
 	static int cycle = 0;
 	static int PC;
-	static int startDecodeAfter = 0;
-	static short[] regsiters = new short[8];
-	static HashMap<Integer, ROBEntry> regsiterMap = new HashMap<Integer, ROBEntry>();
+	static short[] registers = new short[8];
+	static int fetchNow = 0;
+	static HashMap<Short, ROBEntry> registerMap = new HashMap<Short, ROBEntry>();
 
 	public static int[] readCacheInputs() throws NumberFormatException,
 			IOException {
@@ -126,92 +125,197 @@ public class Main {
 		readInput();
 		System.setIn(new FileInputStream(new File("Input.in")));
 		readInstructions();
-        MemoryWord [] go = new MemoryWord[5];
-        int k = 0;
-        MemoryWord nextCurrent = null;
-        MemoryWord nextCurrent2 = null;
+		int k = 0;
 		while (true) {
-			MemoryWord current = fetch();
-			decode(nextCurrent);
-			dispatch(nextCurrent2);
+			fetch();
+			decode();
+			dispatch();
 			Issue();
 			execute();
 			Commmit();
-			nextCurrent2 = nextCurrent;
-			nextCurrent = current;
 			cycle++;
 		}
 	}
 
-	private static void Commmit() {
+	private static String checkRegisterMap(int src) {
+		if (!registerMap.containsKey(src))
+			return registers[src] + "";
+		ROBEntry entry = registerMap.get(src);
+		if (!entry.inProgress)
+			return entry.data + "";
+		return null;
+	}
 
+	private static void Commmit() {
+		int committed = 0;
+		while (true)
+			if (rob.size() > 0 && rob.peek().instruction.cycles[5] < cycle
+					&& rob.peek().inProgress == false
+					&& committed < pipeLineWidth) {
+				committed++;
+				registerMap.remove(rob.remove().logicalRegister);
+			} else {
+				break;
+			}
+	}
+
+	private static void execute() {
+		int doneEx = 0;
+		for (int i = 0; i < 2; i++) {
+			if (functionalUnits[i].size() == 0) {
+				i++;
+				continue;
+			}
+			MemoryWord instruction = functionalUnits[i].peek();
+			if (doneEx == pipeLineWidth)
+				break;
+			if (instruction.cycles[4] > cycle) {
+				i++;
+				continue;
+			}
+			functionalUnits[i].remove();
+			short result = calculate(instruction.source1Val,
+					instruction.source2Val, instruction.type);
+			instruction.entry.inProgress = false;
+			instruction.entry.data = result;
+			instruction.cycles[5] = cycle;
+			for (int j = 0; j < stations.length; j++) {
+				if (stations[j].free == false) {
+					for (int k = 0; k < 2; k++)
+						if (!stations[j].ready[k]
+								&& stations[j].entry[k]
+										.equals(instruction.entry)) {
+							stations[j].ready[k] = true;
+							stations[j].val[k] = result;
+						}
+				}
+			}
+		}
+	}
+
+	private static short calculate(short op1, short op2, InsType type) {
+		switch (type) {
+		case ADD:
+		case ADDI:
+			return (short) (op1 + op2);
+		case NAND:
+			return (short) (op1 & (~op2));
+		case MUL:
+			return (short) (op1 * op2);
+		case DIV:
+			return (short) (op1 / op2);
+		default:
+			return 0;
+		}
 	}
 
 	private static void Issue() {
-
-	}
-
-	public static void execute() {
-
-	}
-
-	private static void dispatch(MemoryWord instruction) {
-
-	}
-
-	private static void decode(MemoryWord instruction) {
-		if (rob.size() == robSize) {
-			return;
-		}
+		int issued = 0;
 		for (int i = 0; i < stations.length; i++) {
-			if (stations[i].free) {
-				stations[i].free = false;
-				stations[i].instruction = instruction;
-				ROBEntry entry = new ROBEntry(instruction.type,
-						instruction.destination);
-				rob.add(entry);
-				stations[i].robEntry = entry;
+			if (issued == pipeLineWidth)
 				break;
-			}
-		}
-	}
-
-	private static MemoryWord fetch() {
-		if (startDecodeAfter > 0) {
-			startDecodeAfter--;
-			return null;
-		}
-		if (instructionBuffer.size() < pipeLineWidth) {
-		
-			// not enough instructions in instruction buffer
-			startDecodeAfter = 0;
-			boolean getFromMemory = true;
-			int displacement = 0;
-			MemoryWord[] instructions = null;
-			int time = 0;
-			for (int i = 0; i < InstCaches.length; i++) {
-				time += InstCaches[i].latency;
-				if ((instructions = InstCaches[i].readLine(PC)) != null) {
-					getFromMemory = false;
-					displacement = InstCaches[i].accessVariables(PC)[0];
-					break;
+			if (stations[i].free == false
+					&& stations[i].instruction.cycles[2] < cycle
+					&& stations[i].ready[0] == true
+					&& stations[i].ready[1] == true) {
+				int type = stations[i].instruction.instType;
+				if (functionalUnits[type].size() < functionalUnitsNums[type]) {
+					issued++;
+					MemoryWord current = stations[i].instruction;
+					current.cycles[3] = cycle;
+					current.source1Val = stations[i].val[0];
+					current.source2Val = stations[i].val[1];
+					current.cycles[4] = cycle + functionalUnitsLatencies[type];
+					functionalUnits[type].add(current);
+					stations[i].free = true;
 				}
 			}
-			if (getFromMemory) {
-				instructions = new MemoryWord[] { RAM[PC] };
-				time += ramAccessTime;
-				for (int i = 0; i < InstCaches.length; i++)
-					InstCaches[i].fetchFromMemory(PC);
+		}
+	}
+
+	private static void dispatch() {
+		for (int i = 0; i < stations.length; i++) {
+			if (stations[i].free == false
+					&& stations[i].instruction.cycles[1] < cycle
+					&& stations[i].instruction.cycles[2] == -1) {
+				stations[i].instruction.cycles[2] = cycle;
+				MemoryWord instruction = stations[i].instruction;
+				short src[] = { instruction.source1, instruction.source2 };
+				for (int j = 0; j < 2; j++) {
+					if (j == 1 && !instruction.flagForSource2) {
+						stations[i].ready[j] = true;
+						stations[i].val[j] = src[j];
+					}
+					String val = checkRegisterMap(src[j]);
+					if (val != null) {
+						stations[i].ready[j] = true;
+						stations[i].val[j] = Short.parseShort(val);
+					} else {
+						stations[i].ready[j] = false;
+						stations[i].entry[j] = registerMap.get(src[j]);
+					}
+				}
+				registerMap.put(instruction.destination, stations[i].robEntry);
 			}
-			startDecodeAfter = time - 1;
+		}
+	}
+
+	private static void decode() {
+		if (instructionBuffer.getFirst().cycles[0] >= cycle)
+			return;
+		int num = pipeLineWidth;
+		while (instructionBuffer.size() > 0
+				&& instructionBuffer.getFirst().cycles[0] < cycle && num > 0) {
+			num--;
+			if (robSize == rob.size()) {
+				for (int i = 0; i < stations.length; i++) {
+					if (stations[i].free) {
+						stations[i].free = false;
+						MemoryWord instruction = instructionBuffer.remove();
+						instruction.cycles[1] = cycle;
+						stations[i].instruction = instruction;
+						ROBEntry entry = new ROBEntry(instruction.type,
+								instruction);
+						entry.inProgress = true;
+						instruction.entry = entry;
+						rob.add(entry);
+						stations[i].robEntry = entry;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	private static void fetch() {
+		if (fetchNow == 0 && instructionBuffer.size() < instructionBufferSize) {
+			int time = 0;
+			int missedCaches = 0;
+			MemoryWord[] instructions = null;
+			int displacement = 0;
+			for (int i = 0; i < InstCaches.length; i++) {
+				time += InstCaches[i].latency;
+				if ((InstCaches[i].readLine(PC)) != null) {
+					displacement = InstCaches[i].accessVariables(PC)[0];
+					break;
+				} else
+					missedCaches++;
+			}
+			if (missedCaches == 3)
+				time += ramAccessTime;
+			for (int i = 0; i < missedCaches; i++) {
+				InstCaches[i].fetchFromMemory(PC);
+			}
+			instructions = InstCaches[0].readLine(PC);
 			for (int i = displacement; i < instructions.length; i++) {
 				if (instructionBuffer.size() == instructionBufferSize)
 					break;
 				PC++;
+				instructions[i].cycles[0] = time + cycle - 1;
 				instructionBuffer.add(instructions[i]);
 			}
-			return null;
-		}
-		return instructionBuffer.remove();
+			fetchNow += time - 1;
+		} else if (fetchNow > 0)
+			fetchNow--;
 	}
 }
