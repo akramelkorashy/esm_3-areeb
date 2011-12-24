@@ -32,6 +32,7 @@ public class Cache {
 		Tag = new int[m][linesPerBank];
 		for (int i = 0; i < m; i++)
 			Arrays.fill(Tag[i], -1);
+		//System.out.println(L+" "+M+" "+s+" "+numLines+" "+linesPerBank+" "+wordPerLine);
 	}
 
 	public int[] accessVariables(int addr) {
@@ -47,9 +48,9 @@ public class Cache {
 	}
 
 	public MemoryWord fetchFromMemory(int addr) {
+		int[] indices = accessVariables(addr);
 		addr /= wordPerLine;
 		addr *= wordPerLine;
-		int[] indices = accessVariables(addr);
 		int i = indices[1];
 		int t = indices[2];
 		int m = 0;
@@ -60,7 +61,7 @@ public class Cache {
 			Data[m][i][j] = Main.RAM[addr + j];
 		}
 		Tag[m][i] = t;
-		return Data[m][i][addr % (1 << wordPerLine)];
+		return Data[m][i][indices[0]];
 	}
 
 	public MemoryWord read(int addr) {
@@ -88,7 +89,7 @@ public class Cache {
 				return Data[j][i];
 			}
 		}
-		misses ++;
+		misses++;
 		return null;
 	}
 

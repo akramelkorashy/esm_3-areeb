@@ -1,6 +1,6 @@
 import java.util.Arrays;
 
-public class MemoryWord implements Comparable<MemoryWord>{
+public class MemoryWord implements Comparable<MemoryWord> {
 	InsType type;
 	short destination;
 	short source1;
@@ -10,12 +10,18 @@ public class MemoryWord implements Comparable<MemoryWord>{
 	short source2Val;
 	short value;
 	boolean flagForSource2 = true;
-	int [] cycles;
+	int[] cycles;
 	ROBEntry entry;
-	
+	String inst;
+
+	public String toString() {
+		return inst;
+	}
+
 	public MemoryWord(String instruction) {
-		cycles = new int [6];
-		Arrays.fill(cycles, -1);
+		inst = instruction;
+		cycles = new int[6];
+		Arrays.fill(cycles, Integer.MAX_VALUE);
 		String[] ar = instruction.split(" ");
 		if (ar.length == 4) {
 			if (ar[0].equals("LW")) {
@@ -26,7 +32,7 @@ public class MemoryWord implements Comparable<MemoryWord>{
 				flagForSource2 = false;
 				instType = 0;
 			} else if (ar[0].equals("SW")) {
-				type = InsType.STR;
+				type = InsType.SW;
 				destination = getRegNumb(ar[1]);
 				source1 = getRegNumb(ar[2]);
 				source2 = Short.parseShort(ar[3]);
@@ -50,6 +56,7 @@ public class MemoryWord implements Comparable<MemoryWord>{
 				destination = getRegNumb(ar[1]);
 				source1 = getRegNumb(ar[2]);
 				source2 = Short.parseShort(ar[3]);
+				System.out.println(ar[2]);
 				flagForSource2 = false;
 				instType = 0;
 			} else if (ar[0].equals("NAND")) {

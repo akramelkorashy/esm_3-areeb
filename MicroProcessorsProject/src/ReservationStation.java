@@ -1,6 +1,6 @@
 public class ReservationStation {
 	MemoryWord instruction;
-	boolean free, ready[];
+	boolean busy, ready[];
     short val[];
     ROBEntry entry[];
 	ROBEntry robEntry;
