@@ -7,8 +7,21 @@ import java.util.PriorityQueue;
 
 import javax.xml.crypto.Data;
 
+/**
+ * Assumptions:
+ * 
+ * 1- Cache line size is always a multiple of the lower level cache's line size.
+ * 
+ * 2- Memory has as many ports as needed (infinite) -- This can be limited by
+ * keeping counters for each port (when they will be accessible) but the number
+ * of ports is not specified as an input parameter
+ * 
+ * 3- When one level cache has a Write-Allocate policy, then all higher levels
+ * of cache should have a Write-Allocate policy as well.
+ * */
 public class Main {
 	static int allCommitted;
+	static int lastBranched = -1;
 	static BufferedReader br;
 	static Cache[] DataCaches;
 	static Cache[] InstCaches;
@@ -18,13 +31,22 @@ public class Main {
 	static int ramSize, ramAccessTime, pipeLineWidth, instructionBufferSize,
 			robSize;
 	static ReservationStation[] stations;
+
+	// The 3 PriorityQueues are for the 3 types of functional units; add/sub,
+	// mul and div
 	static PriorityQueue<MemoryWord>[] functionalUnits = new PriorityQueue[3];
+
+	// The latencies for each of the 3 types of functional units
 	static int[] functionalUnitsLatencies;
+
 	static int[] functionalUnitsNums;
 	static int cycle = 1;
 	static int PC;
 	static short[] registers = new short[8];
+
+	// latency before the next fetch can take place
 	static int fetchNow = 0;
+
 	static HashMap<Short, ROBEntry> registerMap = new HashMap<Short, ROBEntry>();
 
 	public static int[] readCacheInputs() throws NumberFormatException,
@@ -113,6 +135,11 @@ public class Main {
 		functionalUnitsLatencies[2] = Integer.parseInt(br.readLine());
 	}
 
+	/**
+	 * make some initializations, read from stdin the sequence of instructions
+	 * to be simulated and make the first step of simulation; storing them in
+	 * the RAM
+	 * */
 	public static void readInstructions() throws NumberFormatException,
 			IOException {
 		for (int i = 0; i < functionalUnits.length; i++) {
@@ -132,7 +159,9 @@ public class Main {
 		System.setIn(new FileInputStream(new File("Input.txt")));
 		br = new BufferedReader(new InputStreamReader(System.in));
 		readInput();
-		System.out.println("Done reading specifications");
+		System.out
+				.println("Done reading specifications. "
+						+ "Now, please enter the sequence of instructions to be executed:");
 		readInstructions();
 		/*
 		 * registers[0] = 1; registers[1] = 2; registers[5] = 1; registers[6] =
@@ -151,29 +180,106 @@ public class Main {
 		}
 	}
 
+	/**
+	 * This method also includes the actions of loading and storing into memory
+	 * mainly because no functional unit is actually needed at all for accessing
+	 * the memory after the address has been calculated.
+	 * */
 	private static void Commmit() {
 		int committed = 0;
 		System.out.println("ENTER COMMIT STAGE");
-		while (true)
-			if (rob.size() > 0 && rob.peek().instruction.cycles[5] < cycle
-					&& !rob.peek().inProgress && committed < pipeLineWidth) {
+		while (true) {
+			ROBEntry peek = rob.peek();
+			MemoryWord peekInstruction = rob.peek().instruction;
+			if (rob.size() > 0 && peekInstruction.cycles[5] < cycle
+					&& !peek.inProgress && committed < pipeLineWidth) {
+				// The entry at the peek of the ROB is ready to commit
 				System.out.println("COMMITTING");
 				committed++;
 				allCommitted++;
-				short d = rob.peek().logicalRegister;
+
+				short d = peek.logicalRegister;
 				short data = rob.remove().data;
-				registerMap.remove(d);
-				registers[d] = data;
-				System.out.println(cycle + " " + d + " " + data);
+				int addr = peekInstruction.source1Val
+						+ peekInstruction.source2Val;
+
+				int cacheReached = 0;
+				boolean foundInCache = false;
+
+				switch (peekInstruction.type) {
+				case LD:
+					MemoryWord toLoad = null;
+					// getting the word to be loaded
+					for (cacheReached = 0; cacheReached < DataCaches.length; cacheReached++) {
+						if ((toLoad = (DataCaches[cacheReached].read(addr))) != null) {
+							foundInCache = true;
+							break;
+						}
+					}
+					if (!foundInCache)
+						toLoad = RAM[addr];
+					// assigning data to the correct load value in order to be
+					// written to the register
+					data = toLoad.value;
+					// updating the caches back
+					while (cacheReached >= 0) {
+						DataCaches[cacheReached--].fetchFromMemory(addr);
+					}
+				case ADD:
+				case NAND:
+				case MUL:
+				case DIV:
+				case ADDI:
+					registerMap.remove(d);
+					registers[d] = data;
+					System.out.println(cycle + " " + d + " " + data);
+					break;
+				case SW:
+					// For the purposes of the simulation, any value to be
+					// stored will be stored in the RAM array. Only the dirty
+					// bits will be set according to the method calls of each
+					// cache and the latencies will be adjusted in the current
+					// and all subsequent memory accesses based on the dirty
+					// bits and the check on the cache policies done here.
+					MemoryWord toStore = new MemoryWord(peekInstruction.value);
+					RAM[addr] = toStore;
+					for (cacheReached = 0; cacheReached < DataCaches.length; cacheReached++) {
+						if (DataCaches[cacheReached].write(addr, toStore) == Cache.HIT) {
+							foundInCache = true;
+							// dirty bit setting already handled by the write
+							// method call
+							break;
+						}
+					}
+
+					// According to the assumption that a write-allocate policy
+					// will be followed in the higher-level caches by
+					// write-allocate policies successively
+					int missedCache = 0;
+					// finds the first write-allocate cache (goes bottom-up)
+					for (missedCache = 0; missedCache < cacheReached; missedCache++) {
+						if (DataCaches[missedCache].missPolicy == CachePolicy.WRITE_ALLOCATE)
+							break;
+					}
+					// writes to all caches starting from the first
+					// write-allocate (bottom-up)
+					while (missedCache < cacheReached) {
+						DataCaches[missedCache].fetchFromMemory(addr);
+						DataCaches[missedCache--].write(addr, toStore);
+					}
+				}
+
 			} else {
 				break;
 			}
+		}
 	}
 
 	private static short calculate(short op1, short op2, InsType type) {
 		switch (type) {
 		case ADD:
 		case ADDI:
+		case JMP:
 			return (short) (op1 + op2);
 		case NAND:
 			return (short) (op1 & (~op2));
@@ -189,8 +295,12 @@ public class Main {
 	private static void execute() {
 		System.out.println("ENTER EXECUTE STAGE");
 		;
+		// The number of instructions that will broadcast their results to
+		// functional units and to the ROB. This shouldn't exceed the
+		// pipeLineWidth
 		int doneEx = 0;
-		for (int i = 0; i < 2;) {
+
+		for (int i = 0; i < functionalUnits.length;) {
 			if (functionalUnits[i].size() == 0) {
 				i++;
 				continue;
@@ -203,16 +313,53 @@ public class Main {
 				continue;
 			}
 			System.out.println("EXECUTING");
+
 			functionalUnits[i].remove();
 			doneEx++;
 			short result = calculate(instruction.source1Val,
 					instruction.source2Val, instruction.type);
+			// The inProgress flag of the ROBEntry is set to false and the
+			// correct result to be committed is written to the ROBEntry when
+			// the instruction execution finish time has been reached
+			// (instruction.cycles[4] <= cycle).
 			instruction.entry.inProgress = false;
 			instruction.entry.data = result;
-			instruction.cycles[5] = cycle;
+
+			// This switch statement handles the branch instructions.
+			// NOTE: We need to flush the instruction buffer and keep track
+			int temp = lastBranched;
+			lastBranched = cycle;
+
+			switch (instruction.type) {
+			case JMP:
+				PC = PC + 1 + result;
+				break;
+			case RET:
+				PC = instruction.value;
+				break;
+			case JALR:
+				instruction.entry.data = (short) (PC + 1);
+				PC = instruction.source2Val;
+				break;
+			default:
+				// NOT a branch instruction.
+				lastBranched = temp;
+			}
+			// The instruction can commit starting from the current cycle only
+			// if the instruction is not a Store instruction which takes a
+			// longer time to commit, this time is set inside the call of the
+			// getExecutionTime
+			if (instruction.type != InsType.SW) {
+				instruction.cycles[5] = cycle;
+			}
+
+			// Broadcasting the result of execution of the instruction to all
+			// the reservations stations that have a non-ready operand which is
+			// waiting on the value from the same ROB entry that this
+			// executed instruction writes to.
 			for (int j = 0; j < stations.length; j++) {
 				if (stations[j].busy) {
-					for (int k = 0; k < 2; k++)
+					for (int k = 0; k < stations[j].ready.length; k++)
 						if (!stations[j].ready[k]
 								&& stations[j].entry[k]
 										.equals(instruction.entry)) {
@@ -233,24 +380,57 @@ public class Main {
 		case DIV:
 			return functionalUnitsLatencies[0];
 		case LD:
-			int adr = instruction.source1Val + instruction.source2Val;
-			int time = functionalUnitsLatencies[0];
-			boolean flag = false;
-			for (int i = 0; i < DataCaches.length; i++) {
-				time += DataCaches[i].latency;
-				if ((DataCaches[i].read(adr)) != null) {
-					flag = true;
+		case SW:
+			/*
+			 * Note that to get the latency of accessing the memory, we need not
+			 * differentiate between the cases of a read and a write (for the
+			 * load and store) because the latency is just the same in both
+			 * cases. And in case of the different write policies, this doesn't
+			 * affect the latency because the total latency accounts for the
+			 * cost of accessing all levels lower than the level that will hit.
+			 * So, no additional cost will be incurred by writing back to any
+			 * level, because its access time will not delay any execution more
+			 * than the access time of the highest level reached after which the
+			 * needed data will reach its intended destination and execution
+			 * continues *
+			 */
+			int addr = instruction.source1Val + instruction.source2Val;
+			int executionTime = functionalUnitsLatencies[0];
+			int commitTime = 0;
+			boolean foundInCache = false;
+			boolean writeBackLatency = false;
+			int cacheReached = 0;
+			for (cacheReached = 0; cacheReached < DataCaches.length; cacheReached++) {
+				commitTime += DataCaches[cacheReached].latency;
+				if ((DataCaches[cacheReached].read(addr)) != null) {
+					foundInCache = true;
 					break;
 				}
+				writeBackLatency |= (DataCaches[cacheReached].missPolicy == CachePolicy.WRITE_ALLOCATE && DataCaches[cacheReached]
+						.willWriteBack(addr));
 			}
-			if (!flag)
-				time += ramAccessTime;
-			return time;
-		case SW:
+			// Please note that any write-back that will need to be done is
+			// assumed to be done to the main memory because, since a miss
+			// happened, the new data will be fetched from memory into all the
+			// levels of cache. Otherwise, we would have inconsistent data
+			// between the different levels of cache between a block and its
+			// subset in the lower level of cache.
+			writeBackLatency |= DataCaches[cacheReached].willWriteBack(addr);
+			if (!foundInCache || writeBackLatency)
+				commitTime += ramAccessTime;
+			if (instruction.type == InsType.SW) {
+				instruction.cycles[5] = cycle + executionTime + commitTime;
+			}
+			return executionTime;
+
 		case JMP:
-		case BEQ:
 		case JALR:
+			return functionalUnitsLatencies[0];
 		case RET:
+			return 1;
+		case BEQ:
+			// 2 * functionalUnitsLatencies[0]?? One cycle for comparison and
+			// another one for addition??
 		default:
 			return 0;
 		}
@@ -262,16 +442,20 @@ public class Main {
 		for (int i = 0; i < stations.length; i++) {
 			if (issued == pipeLineWidth)
 				break;
+			boolean allReady = true;
+			for (boolean ready : stations[i].ready)
+				allReady &= ready;
 			if (stations[i].busy && stations[i].instruction.cycles[2] < cycle
-					&& stations[i].ready[0] && stations[i].ready[1]) {
+					&& allReady) {
 				System.out.println("ISSUING " + stations[i].instruction);
-				int type = stations[i].instruction.instType;
+				int type = stations[i].instruction.functionalUnitType;
 				if (functionalUnits[type].size() < functionalUnitsNums[type]) {
 					issued++;
 					MemoryWord current = stations[i].instruction;
 					current.cycles[3] = cycle;
 					current.source1Val = stations[i].val[0];
 					current.source2Val = stations[i].val[1];
+					current.value = stations[i].val[2];
 					int executing = getExecuteTime(current);
 					current.cycles[4] = cycle + executing;
 					functionalUnits[type].add(current);
@@ -296,11 +480,24 @@ public class Main {
 			if (stations[i].busy && stations[i].instruction.cycles[1] < cycle
 					&& stations[i].instruction.cycles[2] == Integer.MAX_VALUE) {
 				stations[i].instruction.cycles[2] = cycle;
+
 				MemoryWord instruction = stations[i].instruction;
 				System.out.println("DISPATCHING " + instruction);
-				short src[] = { instruction.source1, instruction.source2 };
-				for (int j = 0; j < 2; j++) {
-					if (j == 1 && !instruction.flagForSource2) {
+				short src[] = { instruction.source1, instruction.source2,
+						instruction.destination };
+
+				for (int j = 0; j < stations[i].ready.length; j++) {
+
+					// This check handles write prevention to R0. It handles any
+					// invalid value for the register which may evolve from
+					// intentionally assigning a dummy value
+					if (src[j] < 1 || src[j] > 7) {
+						stations[i].ready[j] = true;
+						continue;
+					}
+
+					if (j == 1 && !instruction.source2IsRegister || j == 2
+							&& instruction.isFirstOperandDestination) {
 						stations[i].ready[j] = true;
 						stations[i].val[j] = src[j];
 						break;
